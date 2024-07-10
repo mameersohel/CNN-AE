@@ -1,151 +1,164 @@
+#FER CNN model for unsupervised learning (implements encoder and decoder - autoencoder)
+#https://www.geeksforgeeks.org/implement-convolutional-autoencoder-in-pytorch-with-cuda/#
+
 import torch
 import torchvision.transforms as transforms
 from torchvision.datasets import ImageFolder
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 import torch.nn as nn
 import torch.optim as optim
-import torch.nn.functional as F
 from sklearn.cluster import KMeans
-from sklearn.metrics import accuracy_score
+import os
+import matplotlib.pyplot as plt
+from torchvision.utils import make_grid
 
-#data preprocessing (resize and normalize images)
+
+device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+print(f"Using device: {device}")
+
+# Data preprocessing (resize and normalize images)
 transform = transforms.Compose([
     transforms.Resize((96, 96)),
     transforms.ToTensor(),
     transforms.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)),
 ])
 
-# Load datasets
-affectnet_dataset = ImageFolder(root='affectnet path', transform=transform)
-ferplus_dataset = ImageFolder(root='ferplus path', transform=transform)
+# Load full dataset
+train_dataset = ImageFolder(root='/Users/ameersohel/Downloads/archive (2)/train', transform=transform)
+test_dataset = ImageFolder(root='/Users/ameersohel/Downloads/archive (2)/test', transform=transform)
 
-#DataLoaders
-# Load datasets
-train_dataset = ImageFolder(root='path/to/fer/train', transform=transform)
-test_dataset = ImageFolder(root='path/to/fer/test', transform=transform)
-val_dataset = ImageFolder(root='path/to/fer/validation', transform=transform)
 
-# Create DataLoaders
-FER_train = DataLoader(train_dataset, batch_size=32, shuffle=True)
-FER_test = DataLoader(test_dataset, batch_size=32, shuffle=False)
-val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False)
+#select a smaller number then get that subset
+subset_num = list(range(1000))
+train_subset = Subset(train_dataset, subset_num)
+test_subset = Subset(test_dataset, subset_num)
 
-#FER CNN model for unsupervised learning (implements encoder and decoder - autoencoder)
-#https://www.geeksforgeeks.org/implement-convolutional-autoencoder-in-pytorch-with-cuda/#
+# DataLoaders for training
+FER_train = DataLoader(train_subset, batch_size=64, shuffle=True)
+FER_test = DataLoader(test_subset, batch_size=64, shuffle=True)
 
 class FERCNN(nn.Module):
     def __init__(self):
         super(FERCNN, self).__init__()
-        self.conv1 = nn.Conv2d(96, 96, 3)
-        self.pool = nn.MaxPool2d(2, 2)
-        self.conv2 = nn.Conv2d(96, 96, 3)
-        self.fc1 = nn.Linear(16 * 5 * 5, 120)
-        self.fc2 = nn.Linear(120, 84)
-        self.fc3 = nn.Linear(84, 8)
-
+        self.encoder = nn.Sequential(
+            nn.Conv2d(3, 16, 3), 
+            nn.ReLU(),
+            nn.Conv2d(16, 32, 3), 
+            nn.ReLU()
+        )
         # Decoder
-        self.t_conv1 = nn.ConvTranspose2d(128, 64, kernel_size=2, stride=2)
-        self.t_conv2 = nn.ConvTranspose2d(64, 32, kernel_size=2, stride=2)
-        self.t_conv3 = nn.ConvTranspose2d(32, 8, kernel_size=2, stride=2)
+        self.decoder = nn.Sequential(
+            nn.ConvTranspose2d(32, 16, 3),
+            nn.ReLU(),
+            nn.ConvTranspose2d(16, 3, 3),
+            nn.Sigmoid()  # Sigmoid to match the normalized input
+        )
 
     def forward(self, x):
-        x = self.pool(F.relu(self.conv1(x)))
-        x = self.pool(F.relu(self.conv2(x)))
-        x = torch.flatten(x, 1)  # flatten
-        x = self.fc3(x)
-
-        # Decoder
-        x = F.relu(self.fc1(x))
-        x = F.relu(self.fc2(x))
-        x = torch.sigmoid(self.t_conv3(x))  # Sigmoid activation for the output
+        x = self.encoder(x)
+        x = self.decoder(x)
         return x
 
 # Instantiate the model
-model = FERCNN()
+model = FERCNN().to(device)
 
-#hyperparameters
-batch_size = 64
+# Hyperparameters
 learning_rate = 0.001
-epochs = 100
+epochs = 10
 
-#loss function and optimizer
-criterion = nn.CrossEntropyLoss()
+# Loss function and optimizer
+criterion = nn.MSELoss()
 optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
-#training
-for epoch in range(epochs):  # loop over the dataset multiple times
+# Training
+for epoch in range(epochs):
     model.train()
     running_loss = 0.0
-    for images, data in range(affectnet_loader):
-        # zero the parameter gradients
+    for images, _ in FER_train:
+        images = images.to(device)
         optimizer.zero_grad()
-
-        # forward + backward + optimize
         outputs = model(images)
         loss = criterion(outputs, images)
         loss.backward()
         optimizer.step()
-
-        # print running stats
         running_loss += loss.item()
-        if images % 2000 == 1999:    # print every 2000 mini-batches
-            print(f'[{epoch + 1}, {images + 1:5d}] loss: {running_loss / 2000:.3f}')
-            running_loss = 0.0
+    print(f'Epoch [{epoch + 1}/{epochs}], Loss: {running_loss / len(FER_train):.4f}')
 
-#feature extraction from encoder layers
+# Feature extraction from encoder layers
 class Encoder(nn.Module):
     def __init__(self, autoencoder):
         super(Encoder, self).__init__()
-        self.encoder = nn.Sequential(
-            autoencoder.conv1,
-            nn.ReLU(),
-            autoencoder.pool,
-            autoencoder.conv2,
-            nn.ReLU(),
-            autoencoder.pool,
-            autoencoder.conv3,
-            nn.ReLU(),
-            autoencoder.pool
-        )
+        self.encoder = autoencoder.encoder
 
     def forward(self, x):
         x = self.encoder(x)
         return x
 
-# Instantiate the encoder
-encoder = Encoder(model)
+encoder = Encoder(model).to(device)
 encoder.eval()
 
 def extract_features(dataloader):
     features = []
-    for images, data in dataloader:
-        with torch.no_grad():
+    with torch.no_grad():
+        for images, _ in dataloader:
+            images = images.to(device)
             output = encoder(images)
-        features.append(output)
+            features.append(output.view(images.size(0), -1).cpu())  # Flatten the features and move to CPU
     return torch.cat(features, dim=0)
 
-# Extract features for both datasets
-affectnet_features = extract_features(affectnet_loader)
-ferplus_features = extract_features(ferplus_loader)
-
-from sklearn.cluster import KMeans
-
-# Combine features from both datasets
-features = torch.cat((affectnet_features, ferplus_features), dim=0).view(len(affectnet_features) + len(ferplus_features), -1).numpy()
+# Extract features for the dataset
+ferplus_features = extract_features(FER_train).cpu().numpy()
 
 # Perform K-means clustering
-kmeans = KMeans(n_clusters=8, random_state=0).fit(features)
-labels = kmeans.labels_
+kmeans = KMeans(n_clusters=8, random_state=0).fit(ferplus_features)
+cluster_labels = kmeans.labels_
 
-# Actual labels from datasets to test accuracy?
-affectnet_labels = [label for _, label in affectnet_dataset]
-ferplus_labels = [label for _, label in ferplus_dataset]
-actual_labels = affectnet_labels + ferplus_labels
+#print("K-means clustering labels:", cluster_labels)
 
-#calculate accuracy
-predicted_labels = labels  # need to replace with prooper clustering labels
-accuracy = accuracy_score(actual_labels, predicted_labels)
-print(f'Accuracy: {accuracy}')
 
-#Calinski-Harabasz Index
+# Visualize feature maps of a single image
+def visualize_features(image, model):
+    model.eval()
+    with torch.no_grad():
+        feature_maps = model.encoder(image.unsqueeze(0).to(device))
+
+    # Plot the feature maps
+    for i in range(feature_maps.shape[1]):
+        plt.subplot(4, 8, i + 1)
+        plt.imshow(feature_maps[0, i].cpu(), cmap='gray')
+        plt.axis('off')
+    plt.show()
+    
+
+# Example usage
+sample_image, _ = train_subset[0]
+visualize_features(sample_image, model)
+
+# Example of how you might implement plotting clusters
+def plot_clusters(cluster_labels, dataset, num_clusters=8, num_samples_per_cluster=5):
+    # Create a directory to save the cluster images
+    os.makedirs("cluster_images", exist_ok=True)
+
+    # Collect a few images from each cluster
+    images_per_cluster = [[] for _ in range(num_clusters)]
+    for idx, label in enumerate(cluster_labels):
+        if len(images_per_cluster[label]) < num_samples_per_cluster:
+            image, _ = dataset[idx]
+            images_per_cluster[label].append(image)
+
+    # Plotting
+    fig, axs = plt.subplots(num_clusters, num_samples_per_cluster, figsize=(12, 12))
+
+    for cluster_idx in range(num_clusters):
+        for sample_idx in range(num_samples_per_cluster):
+            image = images_per_cluster[cluster_idx][sample_idx]
+            axs[cluster_idx, sample_idx].imshow(make_grid(image, normalize=True).permute(1, 2, 0))
+            axs[cluster_idx, sample_idx].axis('off')
+            axs[cluster_idx, sample_idx].set_title(f'Cluster {cluster_idx}')
+
+    plt.tight_layout()
+    plt.show()
+
+# Example usage:
+plot_clusters(cluster_labels, train_subset)
 
