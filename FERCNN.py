@@ -4,21 +4,20 @@
 import torch
 import torchvision.transforms as transforms
 from torchvision.datasets import ImageFolder
-from torch.utils.data import DataLoader, Subset, random_split
 import torch.nn as nn
 import torch.optim as optim
+from torch.utils.data import DataLoader, random_split
 from sklearn.cluster import KMeans
 import os
 import matplotlib.pyplot as plt
 from torchvision.utils import make_grid
-import numpy as np
 
 device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
 print(f"Using device: {device}")
 
 # Data preprocessing (resize and normalize images)
 transform = transforms.Compose([
-    transforms.Resize((96, 96)),
+    transforms.Resize((48, 48)),
     transforms.ToTensor(),
     transforms.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)),
 ])
@@ -26,58 +25,70 @@ transform = transforms.Compose([
 # Load all images from the directory
 full_dataset = ImageFolder(root='/Users/ameersohel/Downloads/FER-CNN-AE-main', transform=transform)
 
-# Split the dataset into training and testing sets (80% train, 20% test)
-train_size = int(0.8 * len(full_dataset))
+# Split the dataset into training and testing sets (70% train, 30% test)
+train_size = int(0.7 * len(full_dataset))
 test_size = len(full_dataset) - train_size
 train_dataset, test_dataset = random_split(full_dataset, [train_size, test_size])
 
-# Function to create a random subset from a dataset
-def create_random_subset(dataset, subset_size):
-    indices = np.random.choice(len(dataset), size=subset_size, replace=False)
-    return Subset(dataset, indices)
+# DataLoaders for training and testing subsets
+train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True)
+test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False)
 
-# Create random subsets for experimentation
-subset_size = 1000  # Adjust the subset size as needed
-train_subset = create_random_subset(train_dataset, subset_size)
-test_subset = create_random_subset(test_dataset, subset_size // 4)  # Smaller test subset
-
-# Create DataLoaders for training and testing subsets
-train_loader = DataLoader(train_subset, batch_size=64, shuffle=True)
-test_loader = DataLoader(test_subset, batch_size=64, shuffle=False)
-
+#FER CNN-Autoencoder
 class FERCNN(nn.Module):
     def __init__(self):
         super(FERCNN, self).__init__()
+        # Encoder
         self.encoder = nn.Sequential(
-            nn.Conv2d(3, 16, 3, stride=2, padding=1),  # Output: 16 x 48 x 48
+            nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1),  # Output: 64 x 48 x 48
             nn.ReLU(),
-            nn.Conv2d(16, 32, 3, stride=2, padding=1), # Output: 32 x 24 x 24
-            nn.ReLU()
+            nn.BatchNorm2d(64),
+            nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=1),  # Output: 64 x 48 x 48
+            nn.Tanh(),
+            nn.MaxPool2d(2, 2),  # Output: 64 x 24 x 24
+            nn.Conv2d(64, 128, kernel_size=2, stride=1, padding=1),  # Output: 128 x 24 x 24
+            nn.ReLU(),
+            nn.BatchNorm2d(128),
+            nn.MaxPool2d(2, 2)  # Output: 128 x 12 x 12
         )
+        self.fc1 = nn.Linear(128 * 12 * 12, 2048)  # Fully connected layer
+        self.fc2 = nn.Linear(2048, 128 * 12 * 12)
+
+        # Decoder
         self.decoder = nn.Sequential(
-            nn.ConvTranspose2d(32, 16, 3, stride=2, padding=1, output_padding=1), # Output: 16 x 48 x 48
+            nn.ConvTranspose2d(128, 128, kernel_size=2, stride=2),  # Output: 128 x 24 x 24
             nn.ReLU(),
-            nn.ConvTranspose2d(16, 3, 3, stride=2, padding=1, output_padding=1), # Output: 3 x 96 x 96
-            nn.Sigmoid()  # Sigmoid to match the normalized input
+            nn.Upsample(scale_factor=2),  # Output: 128 x 48 x 48
+            nn.ConvTranspose2d(128, 64, kernel_size=3, stride=1, padding=1),  # Output: 64 x 48 x 48
+            nn.Tanh(),
+            nn.ConvTranspose2d(64, 64, kernel_size=3, stride=1, padding=1),  # Output: 64 x 48 x 48
+            nn.ReLU(),
+            nn.ConvTranspose2d(64, 3, kernel_size=3, stride=1, padding=1),  # Output: 3 x 48 x 48
+            nn.Sigmoid()  # Use Sigmoid to match the normalized input
         )
 
     def forward(self, x):
         x = self.encoder(x)
+        x = x.view(x.size(0), -1)  # Flatten
+        x = self.fc1(x)
+        x = self.fc2(x)
+        x = x.view(x.size(0), 128, 12, 12)  # Reshape for the decoder
         x = self.decoder(x)
         return x
 
-# Instantiate the model
+
 model = FERCNN().to(device)
 
 # Hyperparameters
-learning_rate = 0.001
-epochs = 50
+learning_rate = 0.0001
+epochs = 10
 
 # Loss function and optimizer
 criterion = nn.MSELoss()
 optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
-# Training
+# training loop through training loader set
+losses = []
 for epoch in range(epochs):
     model.train()
     running_loss = 0.0
@@ -89,9 +100,20 @@ for epoch in range(epochs):
         loss.backward()
         optimizer.step()
         running_loss += loss.item()
-    print(f'Epoch [{epoch + 1}/{epochs}], Loss: {running_loss / len(train_loader):.4f}')
+    epoch_loss = running_loss / len(train_loader)
+    losses.append(epoch_loss)
+    print(f'Epoch [{epoch + 1}/{epochs}], Loss: {epoch_loss:.4f}')
 
-# Feature extraction from encoder layers
+# Plot training loss over epochs
+plt.figure(figsize=(10, 5))
+plt.plot(range(1, epochs + 1), losses, marker='o')
+plt.title('Training Loss over Epochs')
+plt.xlabel('Epoch')
+plt.ylabel('Loss')
+plt.grid(True)
+plt.show()
+
+# Encoder class to use only encoder part of CNN-AE
 class Encoder(nn.Module):
     def __init__(self, autoencoder):
         super(Encoder, self).__init__()
@@ -101,9 +123,12 @@ class Encoder(nn.Module):
         x = self.encoder(x)
         return x
 
+
+#define and set to evaluation mode
 encoder = Encoder(model).to(device)
 encoder.eval()
 
+#extract features from encoder function and flatten
 def extract_features(dataloader):
     features = []
     with torch.no_grad():
@@ -113,40 +138,24 @@ def extract_features(dataloader):
             features.append(output.view(images.size(0), -1).cpu())  # Flatten features for clustering
     return torch.cat(features, dim=0)
 
-# Extract features for the dataset
-ferplus_features = extract_features(train_loader).cpu().numpy()
 
-# Perform K-means clustering
-kmeans = KMeans(n_clusters=8, random_state=0).fit(ferplus_features)
-cluster_labels = kmeans.labels_
+# Extract from training dataset
+train_features = extract_features(train_loader).cpu().numpy()
 
-#print("K-means clustering labels:", cluster_labels)
+# K-means clustering on the training
+kmeans_train = KMeans(n_clusters=8, random_state=0).fit(train_features)
+train_cluster_labels = kmeans_train.labels_
 
+# Extract from test dataset
+test_features = extract_features(test_loader).cpu().numpy()
 
-# Visualize feature maps of a single image
-def visualize_features(image, model):
-    model.eval()
-    with torch.no_grad():
-        feature_maps = model.encoder(image.unsqueeze(0).to(device))
-
-    # Plot the feature maps
-    plt.figure(figsize=(15, 15))
-    for i in range(feature_maps.shape[1]):
-        plt.subplot(4, 8, i + 1)
-        plt.imshow(feature_maps[0, i].cpu(), cmap='gray')
-        plt.axis('off')
-    plt.show()
+# Perform K-means clustering on the test features
+kmeans_test = KMeans(n_clusters=8, random_state=0).fit(test_features)
+test_cluster_labels = kmeans_test.labels_
 
 
-# Example usage
-for images, _ in train_loader:
-    sample_image = images[0]
-    break
-
-visualize_features(sample_image, model)
-
-# Example of how you might implement plotting clusters
-def plot_clusters(cluster_labels, dataset, num_clusters=8, num_samples_per_cluster=5):
+#plot clusters for train/test and cluster labels
+def plot_clusters(cluster_labels, dataset, num_clusters=8, num_samples_per_cluster=4):
     # Create a directory to save the cluster images
     os.makedirs("cluster_images", exist_ok=True)
 
@@ -170,5 +179,10 @@ def plot_clusters(cluster_labels, dataset, num_clusters=8, num_samples_per_clust
     plt.tight_layout()
     plt.show()
 
-# Example usage:
-plot_clusters(cluster_labels, train_subset)
+# Plot clusters for the training data
+print("Training data clusters:")
+plot_clusters(train_cluster_labels, train_dataset)
+
+# Plot clusters for the test data
+print("Test data clusters:")
+plot_clusters(test_cluster_labels, test_dataset)
