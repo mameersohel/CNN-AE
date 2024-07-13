@@ -7,7 +7,9 @@ from torchvision.datasets import ImageFolder
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, random_split
+from sklearn.decomposition import PCA
 from sklearn.cluster import KMeans
+from sklearn.metrics import silhouette_score
 import os
 import matplotlib.pyplot as plt
 from torchvision.utils import make_grid
@@ -15,9 +17,11 @@ from torchvision.utils import make_grid
 device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
 print(f"Using device: {device}")
 
-# Data preprocessing (resize and normalize images)
+# Data preprocessing (resize, data augmentation normalize images)
 transform = transforms.Compose([
     transforms.Resize((48, 48)),
+    transforms.RandomHorizontalFlip(),
+    transforms.RandomRotation(10),
     transforms.ToTensor(),
     transforms.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)),
 ])
@@ -41,28 +45,29 @@ class FERCNN(nn.Module):
         # Encoder
         self.encoder = nn.Sequential(
             nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1),  # Output: 64 x 48 x 48
-            nn.ReLU(),
+            nn.LeakyReLU(0.2),
             nn.BatchNorm2d(64),
-            nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=1),  # Output: 64 x 48 x 48
-            nn.Tanh(),
             nn.MaxPool2d(2, 2),  # Output: 64 x 24 x 24
-            nn.Conv2d(64, 128, kernel_size=2, stride=1, padding=1),  # Output: 128 x 24 x 24
-            nn.ReLU(),
+            nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1),  # Output: 128 x 24 x 24
+            nn.LeakyReLU(0.2),
             nn.BatchNorm2d(128),
-            nn.MaxPool2d(2, 2)  # Output: 128 x 12 x 12
+            nn.MaxPool2d(2, 2),  # Output: 128 x 12 x 12
+            nn.Conv2d(128, 256, kernel_size=3, stride=1, padding=1),  # Output: 256 x 12 x 12
+            nn.LeakyReLU(0.2),
+            nn.BatchNorm2d(256),
+            nn.MaxPool2d(2, 2),  # Output: 256 x 6 x 6
         )
-        self.fc1 = nn.Linear(128 * 12 * 12, 2048)  # Fully connected layer
-        self.fc2 = nn.Linear(2048, 128 * 12 * 12)
+        self.fc1 = nn.Linear(256 * 6 * 6, 2048)  # Fully connected layer
+        self.fc2 = nn.Linear(2048, 256 * 6 * 6)
 
         # Decoder
         self.decoder = nn.Sequential(
+            nn.ConvTranspose2d(256, 128, kernel_size=2, stride=2),  # Output: 128 x 12 x 12
+            nn.LeakyReLU(0.2),
             nn.ConvTranspose2d(128, 128, kernel_size=2, stride=2),  # Output: 128 x 24 x 24
-            nn.ReLU(),
-            nn.Upsample(scale_factor=2),  # Output: 128 x 48 x 48
-            nn.ConvTranspose2d(128, 64, kernel_size=3, stride=1, padding=1),  # Output: 64 x 48 x 48
-            nn.Tanh(),
-            nn.ConvTranspose2d(64, 64, kernel_size=3, stride=1, padding=1),  # Output: 64 x 48 x 48
-            nn.ReLU(),
+            nn.LeakyReLU(0.2),
+            nn.ConvTranspose2d(128, 64, kernel_size=2, stride=2),  # Output: 64 x 48 x 48
+            nn.LeakyReLU(0.2),
             nn.ConvTranspose2d(64, 3, kernel_size=3, stride=1, padding=1),  # Output: 3 x 48 x 48
             nn.Sigmoid()  # Use Sigmoid to match the normalized input
         )
@@ -72,7 +77,7 @@ class FERCNN(nn.Module):
         x = x.view(x.size(0), -1)  # Flatten
         x = self.fc1(x)
         x = self.fc2(x)
-        x = x.view(x.size(0), 128, 12, 12)  # Reshape for the decoder
+        x = x.view(x.size(0), 256, 6, 6)  # Reshape for the decoder
         x = self.decoder(x)
         return x
 
@@ -138,20 +143,33 @@ def extract_features(dataloader):
             features.append(output.view(images.size(0), -1).cpu())  # Flatten features for clustering
     return torch.cat(features, dim=0)
 
-
 # Extract from training dataset
 train_features = extract_features(train_loader).cpu().numpy()
 
+# Dimensionality reduction
+pca = PCA(n_components=50)
+train_features_reduced = pca.fit_transform(train_features)
+
 # K-means clustering on the training
-kmeans_train = KMeans(n_clusters=8, random_state=0).fit(train_features)
+kmeans_train = KMeans(n_clusters=8, random_state=0).fit(train_features_reduced)
 train_cluster_labels = kmeans_train.labels_
 
 # Extract from test dataset
 test_features = extract_features(test_loader).cpu().numpy()
 
+# Dimensionality reduction
+test_features_reduced = pca.transform(test_features)
+
 # Perform K-means clustering on the test features
-kmeans_test = KMeans(n_clusters=8, random_state=0).fit(test_features)
+kmeans_test = KMeans(n_clusters=8, random_state=0).fit(test_features_reduced)
 test_cluster_labels = kmeans_test.labels_
+
+# Silhouette score to measure clusters and evaluate
+train_silhouette_score = silhouette_score(train_features_reduced, train_cluster_labels)
+test_silhouette_score = silhouette_score(test_features_reduced, test_cluster_labels)
+
+print(f'Training Silhouette Score: {train_silhouette_score:.4f}')
+print(f'Test Silhouette Score: {test_silhouette_score:.4f}')
 
 
 #plot clusters for train/test and cluster labels
@@ -186,3 +204,4 @@ plot_clusters(train_cluster_labels, train_dataset)
 # Plot clusters for the test data
 print("Test data clusters:")
 plot_clusters(test_cluster_labels, test_dataset)
+
