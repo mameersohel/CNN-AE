@@ -56,19 +56,23 @@ class FERCNN(nn.Module):
             nn.LeakyReLU(0.2),
             nn.BatchNorm2d(256),
             nn.MaxPool2d(2, 2),  # Output: 256 x 6 x 6
+            nn.Conv2d(256, 512, kernel_size=3, stride=1, padding=1),  # Output: 512 x 6 x 6
+            nn.LeakyReLU(0.2),
+            nn.BatchNorm2d(512),
+            nn.MaxPool2d(2, 2)   # Output: 512 x 3 x 3
         )
-        self.fc1 = nn.Linear(256 * 6 * 6, 2048)  # Fully connected layer
-        self.fc2 = nn.Linear(2048, 256 * 6 * 6)
+        self.fc1 = nn.Linear(512 * 3 * 3, 2048)  # Fully connected layer
+        self.fc2 = nn.Linear(2048, 512 * 3 * 3)
 
         # Decoder
         self.decoder = nn.Sequential(
+            nn.ConvTranspose2d(512, 256, kernel_size=2, stride=2),  # Output: 256 x 6 x 6
+            nn.LeakyReLU(0.2),
             nn.ConvTranspose2d(256, 128, kernel_size=2, stride=2),  # Output: 128 x 12 x 12
             nn.LeakyReLU(0.2),
-            nn.ConvTranspose2d(128, 128, kernel_size=2, stride=2),  # Output: 128 x 24 x 24
+            nn.ConvTranspose2d(128, 64, kernel_size=2, stride=2),  # Output: 64 x 24 x 24
             nn.LeakyReLU(0.2),
-            nn.ConvTranspose2d(128, 64, kernel_size=2, stride=2),  # Output: 64 x 48 x 48
-            nn.LeakyReLU(0.2),
-            nn.ConvTranspose2d(64, 3, kernel_size=3, stride=1, padding=1),  # Output: 3 x 48 x 48
+            nn.ConvTranspose2d(64, 3, kernel_size=2, stride=2),  # Output: 3 x 48 x 48
             nn.Sigmoid()  # Use Sigmoid to match the normalized input
         )
 
@@ -77,16 +81,15 @@ class FERCNN(nn.Module):
         x = x.view(x.size(0), -1)  # Flatten
         x = self.fc1(x)
         x = self.fc2(x)
-        x = x.view(x.size(0), 256, 6, 6)  # Reshape for the decoder
+        x = x.view(x.size(0), 512, 3, 3)  # Reshape for the decoder
         x = self.decoder(x)
         return x
-
 
 model = FERCNN().to(device)
 
 # Hyperparameters
 learning_rate = 0.0001
-epochs = 10
+epochs = 15
 
 # Loss function and optimizer
 criterion = nn.MSELoss()
@@ -146,7 +149,7 @@ def extract_features(dataloader):
 # Extract from training dataset
 train_features = extract_features(train_loader).cpu().numpy()
 
-# Dimensionality reduction
+# PCA dimensionality reduction
 pca = PCA(n_components=50)
 train_features_reduced = pca.fit_transform(train_features)
 
@@ -173,7 +176,7 @@ print(f'Test Silhouette Score: {test_silhouette_score:.4f}')
 
 
 #plot clusters for train/test and cluster labels
-def plot_clusters(cluster_labels, dataset, num_clusters=8, num_samples_per_cluster=4):
+def plot_clusters(cluster_labels, dataset, num_clusters=8, num_samples_per_cluster=5):
     # Create a directory to save the cluster images
     os.makedirs("cluster_images", exist_ok=True)
 
@@ -204,4 +207,3 @@ plot_clusters(train_cluster_labels, train_dataset)
 # Plot clusters for the test data
 print("Test data clusters:")
 plot_clusters(test_cluster_labels, test_dataset)
-
