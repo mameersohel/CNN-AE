@@ -1,16 +1,16 @@
 import torch
 import torchvision.transforms as transforms
-from torch.utils.data import DataLoader, Subset, random_split, Dataset
+from torch.utils.data import DataLoader,Subset, random_split, Dataset
 import torch.nn as nn
 import torch.optim as optim
-from sklearn.cluster import KMeans
 import os
 import matplotlib.pyplot as plt
-from torchvision.utils import make_grid
 import numpy as np
 from PIL import Image
+import random
+from torchvision.transforms import ElasticTransform
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")    
 print(f"Using device: {device}")
 
 # Data preprocessing (resize and normalize images)
@@ -49,12 +49,15 @@ train_dataset, test_dataset = random_split(full_dataset, [train_size, test_size]
 # Function to create a random subset from a dataset
 def create_random_subset(dataset, subset_size):
     indices = np.random.choice(len(dataset), size=subset_size, replace=False)
-    return Subset(dataset, indices)
+    return Subset(dataset,indices)
 
-# Create random subsets for experimentation
 subset_size = 1000  # Adjust the subset size as needed
 train_subset = create_random_subset(train_dataset, subset_size)
 test_subset = create_random_subset(test_dataset, subset_size // 4)  # Smaller test subset
+
+# # Create DataLoaders for training and testing subsets
+# train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True)
+# test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False)
 
 # Create DataLoaders for training and testing subsets
 train_loader = DataLoader(train_subset, batch_size=64, shuffle=True)
@@ -100,7 +103,6 @@ class FERCNN(nn.Module):
             nn.Sigmoid()  # Sigmoid to match the normalized input
         )
 
-        
     def forward(self, x):
         x = self.encoder(x)
         x = self.decoder(x)
@@ -131,88 +133,47 @@ for epoch in range(epochs):
         running_loss += loss.item()
     print(f'Epoch [{epoch + 1}/{epochs}], Loss: {running_loss / len(train_loader):.4f}')
 
-# Feature extraction from encoder layers
-class Encoder(nn.Module):
-    def __init__(self, autoencoder):
-        super(Encoder, self).__init__()
-        self.encoder = autoencoder.encoder
 
-    def forward(self, x):
-        x = self.encoder(x)
-        return x
-
-encoder = Encoder(model).to(device)
-encoder.eval()
-
-def extract_features(dataloader):
-    features = []
-    with torch.no_grad():
-        for images in dataloader:
-            images = images.to(device)
-            output = encoder(images)
-            features.append(output.view(images.size(0), -1).cpu())  # Flatten features for clustering
-    return torch.cat(features, dim=0)
-
-# Extract features for the dataset
-ferplus_features = extract_features(train_loader).cpu().numpy()
-
-# Perform K-means clustering
-kmeans = KMeans(n_clusters=8, random_state=0).fit(ferplus_features)
-cluster_labels = kmeans.labels_
-
-#print("K-means clustering labels:", cluster_labels)
+# Define ElasticTransform
+elastic_transform = ElasticTransform(alpha=34.0, sigma=4.0)
 
 
-# Visualize feature maps of a single image
-def visualize_features(image, model):
-    model.eval()
-    with torch.no_grad():
-        feature_maps = model.encoder(image.unsqueeze(0).to(device))
+# Denormalization function
+def denormalize(tensor, mean, std):
+    mean = torch.tensor(mean).reshape(1, 3, 1, 1).to(tensor.device)
+    std = torch.tensor(std).reshape(1, 3, 1, 1).to(tensor.device)
+    tensor = tensor * std + mean
+    return tensor
 
-    num_feature_maps = feature_maps.shape[1]
-    grid_size = int(np.ceil(np.sqrt(num_feature_maps)))
+# Testing and comparing results
+model.eval()
+mse_loss = 0.0
+with torch.no_grad():
+    for clean_images in test_loader:
+        clean_images = clean_images.to(device)
+        distorted_images = torch.stack([elastic_transform(img.cpu()) for img in clean_images]).to(device)
+        outputs = model(distorted_images)
 
-    # Plot the feature maps
-    plt.figure(figsize=(grid_size * 2, grid_size * 2))
-    for i in range(num_feature_maps):
-        plt.subplot(grid_size, grid_size, i + 1)
-        plt.imshow(feature_maps[0, i].cpu(), cmap='gray')
-        plt.axis('off')
-    plt.show()
+        mse_loss += criterion(outputs, clean_images).item()
 
+        # Denormalize images
+        outputs = denormalize(outputs, mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5))
 
-# Example usage
-for images in train_loader:
-    sample_image = images[0]
-    break
+        # Visualize some examples
+        n = min(clean_images.size(0), 4)
+        fig, axes = plt.subplots(n, 3, figsize=(15, 15))
+        for i in range(n):
+            axes[i, 0].imshow(clean_images[i].cpu().permute(1, 2, 0))
+            axes[i, 0].set_title("Clean Image")
+            axes[i, 0].axis('off')
 
-visualize_features(sample_image, model)
+            axes[i, 1].imshow(distorted_images[i].cpu().permute(1, 2, 0))
+            axes[i, 1].set_title("Distorted Image")
+            axes[i, 1].axis('off')
 
-# Example of how you might implement plotting clusters
-def plot_clusters(cluster_labels, dataset, num_clusters=8, num_samples_per_cluster=5):
-    # Create a directory to save the cluster images
-    os.makedirs("cluster_images", exist_ok=True)
+            axes[i, 2].imshow(outputs[i].cpu().permute(1, 2, 0))
+            axes[i, 2].set_title("Reconstructed Image")
+            axes[i, 2].axis('off')
+        plt.show()
 
-    # Collect a few images from each cluster
-    images_per_cluster = [[] for _ in range(num_clusters)]
-    for idx, label in enumerate(cluster_labels):
-        if len(images_per_cluster[label]) < num_samples_per_cluster:
-            image = dataset[idx]  # No need to unpack
-            images_per_cluster[label].append(image)
-
-    # Plotting
-    fig, axs = plt.subplots(num_clusters, num_samples_per_cluster, figsize=(12, 12))
-
-    for cluster_idx in range(num_clusters):
-        for sample_idx in range(num_samples_per_cluster):
-            if sample_idx < len(images_per_cluster[cluster_idx]):
-                image = images_per_cluster[cluster_idx][sample_idx]
-                axs[cluster_idx, sample_idx].imshow(make_grid(image, normalize=True).permute(1, 2, 0))
-            axs[cluster_idx, sample_idx].axis('off')
-            axs[cluster_idx, sample_idx].set_title(f'Cluster {cluster_idx}')
-
-    plt.tight_layout()
-    plt.show()
-
-# Example usage:
-plot_clusters(cluster_labels, train_subset)
+print(f'Mean Squared Error on test set: {mse_loss / len(test_loader):.4f}')
