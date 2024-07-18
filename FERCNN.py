@@ -1,25 +1,18 @@
-#FER CNN model for unsupervised learning (implements encoder and decoder - autoencoder)
-#https://www.geeksforgeeks.org/implement-convolutional-autoencoder-in-pytorch-with-cuda/#
-
 import torch
 import torchvision.transforms as transforms
 from torchvision.datasets import ImageFolder
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader, random_split
-from sklearn.decomposition import PCA
-from sklearn.cluster import KMeans
-from sklearn.metrics import silhouette_score
-import os
+from torch.utils.data import DataLoader, random_split, Subset
 import matplotlib.pyplot as plt
-from torchvision.utils import make_grid
+import numpy as np
 
 device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
 print(f"Using device: {device}")
 
 # Data preprocessing (resize, data augmentation normalize images)
 transform = transforms.Compose([
-    transforms.Resize((48, 48)),
+    transforms.Resize((96, 96)),
     transforms.RandomHorizontalFlip(),
     transforms.RandomRotation(10),
     transforms.ToTensor(),
@@ -34,45 +27,64 @@ train_size = int(0.7 * len(full_dataset))
 test_size = len(full_dataset) - train_size
 train_dataset, test_dataset = random_split(full_dataset, [train_size, test_size])
 
-# DataLoaders for training and testing subsets
-train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True)
-test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False)
+#def create_random_subset(dataset, subset_size):
+ #   indices = np.random.choice(len(dataset), size=subset_size, replace=False)
+  #  return Subset(dataset, indices)
 
-#FER CNN-Autoencoder
+# Create random subsets for experimentation
+#subset_size = 20000  # Adjust the subset size as needed
+#train_subset = create_random_subset(train_dataset, subset_size)
+#test_subset = create_random_subset(test_dataset, subset_size // 4)  # Smaller test subset
+
+# Create DataLoaders for training and testing subsets
+train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True)
+test_loader = DataLoader(test_dataset, batch_size=64, shuffle=True)
+
+# FER CNN-Autoencoder
 class FERCNN(nn.Module):
     def __init__(self):
         super(FERCNN, self).__init__()
         # Encoder
         self.encoder = nn.Sequential(
-            nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1),  # Output: 64 x 48 x 48
+            nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1),  # Output: 64 x 96 x 96
             nn.LeakyReLU(0.2),
             nn.BatchNorm2d(64),
-            nn.MaxPool2d(2, 2),  # Output: 64 x 24 x 24
-            nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1),  # Output: 128 x 24 x 24
+            nn.MaxPool2d(2, 2),  # Output: 64 x 48 x 48
+
+            nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1),  # Output: 128 x 48 x 48
             nn.LeakyReLU(0.2),
             nn.BatchNorm2d(128),
-            nn.MaxPool2d(2, 2),  # Output: 128 x 12 x 12
-            nn.Conv2d(128, 256, kernel_size=3, stride=1, padding=1),  # Output: 256 x 12 x 12
+            nn.MaxPool2d(2, 2),  # Output: 128 x 24 x 24
+
+            nn.Conv2d(128, 256, kernel_size=3, stride=1, padding=1),  # Output: 256 x 24 x 24
             nn.LeakyReLU(0.2),
             nn.BatchNorm2d(256),
-            nn.MaxPool2d(2, 2),  # Output: 256 x 6 x 6
-            nn.Conv2d(256, 512, kernel_size=3, stride=1, padding=1),  # Output: 512 x 6 x 6
+            nn.MaxPool2d(2, 2),  # Output: 256 x 12 x 12
+
+            nn.Conv2d(256, 512, kernel_size=3, stride=1, padding=1),  # Output: 512 x 12 x 12
             nn.LeakyReLU(0.2),
             nn.BatchNorm2d(512),
-            nn.MaxPool2d(2, 2)   # Output: 512 x 3 x 3
+            nn.MaxPool2d(2, 2),  # Output: 512 x 6 x 6
+
+            nn.Conv2d(512, 1024, kernel_size=3, stride=1, padding=1),  # Output: 1024 x 6 x 6
+            nn.LeakyReLU(0.2),
+            nn.BatchNorm2d(1024),
+            nn.MaxPool2d(2, 2)  # Output: 1024 x 3 x 3
         )
-        self.fc1 = nn.Linear(512 * 3 * 3, 2048)  # Fully connected layer
-        self.fc2 = nn.Linear(2048, 512 * 3 * 3)
+        self.fc1 = nn.Linear(1024 * 3 * 3, 2048)  # Fully connected layer
+        self.fc2 = nn.Linear(2048, 1024 * 3 * 3)
 
         # Decoder
         self.decoder = nn.Sequential(
-            nn.ConvTranspose2d(512, 256, kernel_size=2, stride=2),  # Output: 256 x 6 x 6
+            nn.ConvTranspose2d(1024, 512, kernel_size=2, stride=2),  # Output: 512 x 6 x 6
             nn.LeakyReLU(0.2),
-            nn.ConvTranspose2d(256, 128, kernel_size=2, stride=2),  # Output: 128 x 12 x 12
+            nn.ConvTranspose2d(512, 256, kernel_size=2, stride=2),  # Output: 256 x 12 x 12
             nn.LeakyReLU(0.2),
-            nn.ConvTranspose2d(128, 64, kernel_size=2, stride=2),  # Output: 64 x 24 x 24
+            nn.ConvTranspose2d(256, 128, kernel_size=2, stride=2),  # Output: 128 x 24 x 24
             nn.LeakyReLU(0.2),
-            nn.ConvTranspose2d(64, 3, kernel_size=2, stride=2),  # Output: 3 x 48 x 48
+            nn.ConvTranspose2d(128, 64, kernel_size=2, stride=2),  # Output: 64 x 48 x 48
+            nn.LeakyReLU(0.2),
+            nn.ConvTranspose2d(64, 3, kernel_size=2, stride=2),  # Output: 3 x 96 x 96
             nn.Sigmoid()  # Use Sigmoid to match the normalized input
         )
 
@@ -81,7 +93,7 @@ class FERCNN(nn.Module):
         x = x.view(x.size(0), -1)  # Flatten
         x = self.fc1(x)
         x = self.fc2(x)
-        x = x.view(x.size(0), 512, 3, 3)  # Reshape for the decoder
+        x = x.view(x.size(0), 1024, 3, 3)  # Reshape for the decoder
         x = self.decoder(x)
         return x
 
@@ -90,25 +102,33 @@ model = FERCNN().to(device)
 # Hyperparameters
 learning_rate = 0.0001
 epochs = 15
+noise_factor = 0.5
 
 # Loss function and optimizer
 criterion = nn.MSELoss()
 optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
-# training loop through training loader set
+# Training loop
 losses = []
 for epoch in range(epochs):
     model.train()
     running_loss = 0.0
     for images, _ in train_loader:
         images = images.to(device)
+        # Add random noise to input images
+        noisy_imgs = images + noise_factor * torch.randn_like(images)
+        # Clip the images to be between 0 and 1
+        noisy_imgs = torch.clamp(noisy_imgs, 0., 1.)  # Ensure values are within [0, 1]
+
         optimizer.zero_grad()
-        outputs = model(images)
-        loss = criterion(outputs, images)
+        outputs = model(noisy_imgs.to(device))
+        loss = criterion(outputs, images.to(device))
         loss.backward()
         optimizer.step()
-        running_loss += loss.item()
-    epoch_loss = running_loss / len(train_loader)
+
+        running_loss += loss.item() * images.size(0)
+
+    epoch_loss = running_loss / len(train_loader.dataset)
     losses.append(epoch_loss)
     print(f'Epoch [{epoch + 1}/{epochs}], Loss: {epoch_loss:.4f}')
 
@@ -121,89 +141,50 @@ plt.ylabel('Loss')
 plt.grid(True)
 plt.show()
 
-# Encoder class to use only encoder part of CNN-AE
-class Encoder(nn.Module):
-    def __init__(self, autoencoder):
-        super(Encoder, self).__init__()
-        self.encoder = autoencoder.encoder
 
-    def forward(self, x):
-        x = self.encoder(x)
-        return x
+def visualize_reconstruction(model, dataloader, num_images=10):
+    model.eval()
+    dataiter = iter(dataloader)  # Get an iterator over the DataLoader
+    images, labels = next(dataiter)  # Fetch the first batch of data
 
+    # Add noise to the test images
+    noisy_imgs = images + noise_factor * torch.randn_like(images)
+    noisy_imgs = torch.clamp(noisy_imgs, 0., 1.)
 
-#define and set to evaluation mode
-encoder = Encoder(model).to(device)
-encoder.eval()
+    # Move images and noisy_imgs to device
+    images = images.to(device)
+    noisy_imgs = noisy_imgs.to(device)
 
-#extract features from encoder function and flatten
-def extract_features(dataloader):
-    features = []
-    with torch.no_grad():
-        for images, _ in dataloader:
-            images = images.to(device)
-            output = encoder(images)
-            features.append(output.view(images.size(0), -1).cpu())  # Flatten features for clustering
-    return torch.cat(features, dim=0)
+    # Get sample outputs
+    outputs = model(noisy_imgs)
 
-# Extract from training dataset
-train_features = extract_features(train_loader).cpu().numpy()
+    # Convert tensors to numpy arrays for visualization
+    images_np = images.cpu().numpy()
+    noisy_imgs_np = noisy_imgs.cpu().numpy()
+    outputs_np = outputs.cpu().detach().numpy()
 
-# PCA dimensionality reduction
-pca = PCA(n_components=50)
-train_features_reduced = pca.fit_transform(train_features)
+    # Plot original and reconstructed images
+    fig, axes = plt.subplots(3, num_images, figsize=(25, 4))
 
-# K-means clustering on the training
-kmeans_train = KMeans(n_clusters=8, random_state=0).fit(train_features_reduced)
-train_cluster_labels = kmeans_train.labels_
+    # Plot original images
+    for i in range(num_images):
+        axes[0, i].imshow(np.transpose(images_np[i], (1, 2, 0)))
+        axes[0, i].axis('off')
+        axes[0, i].set_title('Original')
 
-# Extract from test dataset
-test_features = extract_features(test_loader).cpu().numpy()
+    # Plot noisey images
+    for i in range(num_images):
+        axes[1, i].imshow(np.transpose(noisy_imgs_np[i], (1, 2, 0)))
+        axes[1, i].axis('off')
+        axes[1, i].set_title('Noisey Image')
 
-# Dimensionality reduction
-test_features_reduced = pca.transform(test_features)
+    # Plot reconstructed images
+    for i in range(num_images):
+        axes[2, i].imshow(np.transpose(outputs_np[i], (1, 2, 0)))
+        axes[2, i].axis('off')
+        axes[2, i].set_title('Reconstructed')
 
-# Perform K-means clustering on the test features
-kmeans_test = KMeans(n_clusters=8, random_state=0).fit(test_features_reduced)
-test_cluster_labels = kmeans_test.labels_
-
-# Silhouette score to measure clusters and evaluate
-train_silhouette_score = silhouette_score(train_features_reduced, train_cluster_labels)
-test_silhouette_score = silhouette_score(test_features_reduced, test_cluster_labels)
-
-print(f'Training Silhouette Score: {train_silhouette_score:.4f}')
-print(f'Test Silhouette Score: {test_silhouette_score:.4f}')
-
-
-#plot clusters for train/test and cluster labels
-def plot_clusters(cluster_labels, dataset, num_clusters=8, num_samples_per_cluster=5):
-    # Create a directory to save the cluster images
-    os.makedirs("cluster_images", exist_ok=True)
-
-    # Collect a few images from each cluster
-    images_per_cluster = [[] for _ in range(num_clusters)]
-    for idx, label in enumerate(cluster_labels):
-        if len(images_per_cluster[label]) < num_samples_per_cluster:
-            image, _ = dataset[idx]
-            images_per_cluster[label].append(image)
-
-    # Plotting
-    fig, axs = plt.subplots(num_clusters, num_samples_per_cluster, figsize=(12, 12))
-
-    for cluster_idx in range(num_clusters):
-        for sample_idx in range(num_samples_per_cluster):
-            image = images_per_cluster[cluster_idx][sample_idx]
-            axs[cluster_idx, sample_idx].imshow(make_grid(image, normalize=True).permute(1, 2, 0))
-            axs[cluster_idx, sample_idx].axis('off')
-            axs[cluster_idx, sample_idx].set_title(f'Cluster {cluster_idx}')
-
-    plt.tight_layout()
     plt.show()
 
-# Plot clusters for the training data
-print("Training data clusters:")
-plot_clusters(train_cluster_labels, train_dataset)
-
-# Plot clusters for the test data
-print("Test data clusters:")
-plot_clusters(test_cluster_labels, test_dataset)
+# Visualize original and reconstructed images from the test set
+visualize_reconstruction(model, test_loader)
