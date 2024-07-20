@@ -27,15 +27,6 @@ train_size = int(0.7 * len(full_dataset))
 test_size = len(full_dataset) - train_size
 train_dataset, test_dataset = random_split(full_dataset, [train_size, test_size])
 
-#def create_random_subset(dataset, subset_size):
- #   indices = np.random.choice(len(dataset), size=subset_size, replace=False)
-  #  return Subset(dataset, indices)
-
-# Create random subsets for experimentation
-#subset_size = 20000  # Adjust the subset size as needed
-#train_subset = create_random_subset(train_dataset, subset_size)
-#test_subset = create_random_subset(test_dataset, subset_size // 4)  # Smaller test subset
-
 # Create DataLoaders for training and testing subsets
 train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True)
 test_loader = DataLoader(test_dataset, batch_size=64, shuffle=True)
@@ -115,13 +106,9 @@ for epoch in range(epochs):
     running_loss = 0.0
     for images, _ in train_loader:
         images = images.to(device)
-        # Add random noise to input images
-        noisy_imgs = images + noise_factor * torch.randn_like(images)
-        # Clip the images to be between 0 and 1
-        noisy_imgs = torch.clamp(noisy_imgs, 0., 1.)  # Ensure values are within [0, 1]
 
         optimizer.zero_grad()
-        outputs = model(noisy_imgs.to(device))
+        outputs = model(images)
         loss = criterion(outputs, images.to(device))
         loss.backward()
         optimizer.step()
@@ -144,8 +131,9 @@ plt.show()
 
 def visualize_reconstruction(model, dataloader, num_images=10):
     model.eval()
+    mse_loss = 0.0
     dataiter = iter(dataloader)  # Get an iterator over the DataLoader
-    images, labels = next(dataiter)  # Fetch the first batch of data
+    images, _ = next(dataiter)  # Fetch the first batch of data
 
     # Add noise to the test images
     noisy_imgs = images + noise_factor * torch.randn_like(images)
@@ -155,15 +143,17 @@ def visualize_reconstruction(model, dataloader, num_images=10):
     images = images.to(device)
     noisy_imgs = noisy_imgs.to(device)
 
-    # Get sample outputs
+    # Get outputs
     outputs = model(noisy_imgs)
+
+    mse_loss += criterion(outputs, images).item()
 
     # Convert tensors to numpy arrays for visualization
     images_np = images.cpu().numpy()
     noisy_imgs_np = noisy_imgs.cpu().numpy()
     outputs_np = outputs.cpu().detach().numpy()
 
-    # Plot original and reconstructed images
+    # Plot to see outputs
     fig, axes = plt.subplots(3, num_images, figsize=(25, 4))
 
     # Plot original images
@@ -185,6 +175,7 @@ def visualize_reconstruction(model, dataloader, num_images=10):
         axes[2, i].set_title('Reconstructed')
 
     plt.show()
+    print(f'Mean Squared Error on test set: {mse_loss / len(test_loader):.4f}')
 
 # Visualize original and reconstructed images from the test set
 visualize_reconstruction(model, test_loader)
