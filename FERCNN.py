@@ -67,39 +67,31 @@ class FERCNN(nn.Module):
     def __init__(self):
         super(FERCNN, self).__init__()
         self.encoder = nn.Sequential(
-            nn.Conv2d(3, 32, 3, stride=1, padding=1),  # Output: 32 x 96 x 96
+            ResidualBlock(3, 32),  # Output: 32 x 96 x 96
+            nn.Conv2d(32, 64, 3, stride=2, padding=1),  # Output: 64 x 48 x 48
             nn.ReLU(),
-            nn.Conv2d(32, 64, 3, stride=2, padding=1), # Output: 64 x 48 x 48
+            ResidualBlock(64, 128),  # Output: 128 x 48 x 48
+            nn.Conv2d(128, 256, 3, stride=2, padding=1),  # Output: 256 x 24 x 24
             nn.ReLU(),
-            nn.Conv2d(64, 128, 3, stride=1, padding=1), # Output: 128 x 48 x 48
-            nn.ReLU(),
-            nn.Conv2d(128, 256, 3, stride=2, padding=1), # Output: 256 x 24 x 24
-            nn.ReLU(),
-            nn.Conv2d(256, 512, 3, stride=1, padding=1), # Output: 512 x 24 x 24
-            nn.ReLU(),
+            ResidualBlock(256, 512),  # Output: 512 x 24 x 24
             nn.Conv2d(512, 1024, 3, stride=2, padding=1), # Output: 1024 x 12 x 12
             nn.ReLU(),
-            nn.Conv2d(1024, 2048, 3, stride=1, padding=1), # Output: 2048 x 12 x 12
-            nn.ReLU(),
-            nn.Conv2d(2048, 4096, 3, stride=2, padding=1), # Output: 4096 x 6 x 6
-            nn.ReLU()
+            ResidualBlock(1024, 2048),  # Output: 2048 x 12 x 12
+            nn.Conv2d(2048, 4096, 3, stride=2, padding=1) # Output: 4096 x 6 x 6
         )
+        
         self.decoder = nn.Sequential(
-            nn.ConvTranspose2d(4096, 2048, 3, stride=2, padding=1, output_padding=1), # Output: 2048 x 12 x 12
+            nn.ConvTranspose2d(4096, 2048, 3, stride=2, padding=1, output_padding=1),  # Output: 2048 x 12 x 12
             nn.ReLU(),
-            nn.ConvTranspose2d(2048, 1024, 3, stride=1, padding=1), # Output: 1024 x 12 x 12
+            nn.ConvTranspose2d(2048, 1024, 3, stride=2, padding=1, output_padding=1),  # Output: 1024 x 24 x 24
             nn.ReLU(),
-            nn.ConvTranspose2d(1024, 512, 3, stride=2, padding=1, output_padding=1), # Output: 512 x 24 x 24
+            nn.ConvTranspose2d(1024, 512, 3, stride=2, padding=1, output_padding=1),  # Output: 512 x 48 x 48
             nn.ReLU(),
-            nn.ConvTranspose2d(512, 256, 3, stride=1, padding=1), # Output: 256 x 24 x 24
+            nn.ConvTranspose2d(512, 256, 3, stride=2, padding=1, output_padding=1),  # Output: 256 x 96 x 96
             nn.ReLU(),
-            nn.ConvTranspose2d(256, 128, 3, stride=2, padding=1, output_padding=1), # Output: 128 x 48 x 48
+            nn.ConvTranspose2d(256, 64, 3, stride=1, padding=1),  # Output: 64 x 96 x 96
             nn.ReLU(),
-            nn.ConvTranspose2d(128, 64, 3, stride=1, padding=1), # Output: 64 x 48 x 48
-            nn.ReLU(),
-            nn.ConvTranspose2d(64, 32, 3, stride=2, padding=1, output_padding=1), # Output: 32 x 96 x 96
-            nn.ReLU(),
-            nn.ConvTranspose2d(32, 3, 3, stride=1, padding=1),  # Output: 3 x 96 x 96
+            nn.ConvTranspose2d(64, 3, 3, stride=1, padding=1),  # Output: 3 x 96 x 96
             nn.Sigmoid()  # Sigmoid to match the normalized input
         )
 
@@ -107,73 +99,120 @@ class FERCNN(nn.Module):
         x = self.encoder(x)
         x = self.decoder(x)
         return x
+    
 
+class ResidualBlock(nn.Module):
+    def __init__(self, in_channels, out_channels, stride=1, padding=1):
+        super(ResidualBlock, self).__init__()
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=stride, padding=padding)
+        self.bn1 = nn.BatchNorm2d(out_channels)
+        self.relu = nn.ReLU()
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1, padding=padding)
+        self.bn2 = nn.BatchNorm2d(out_channels)
+        
+        self.shortcut = nn.Sequential()
+        if stride != 1 or in_channels != out_channels:
+            self.shortcut = nn.Sequential(
+                nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=stride),
+                nn.BatchNorm2d(out_channels)
+            )
+    
+    def forward(self, x):
+        out = self.relu(self.bn1(self.conv1(x)))
+        out = self.bn2(self.conv2(out))
+        out += self.shortcut(x)
+        out = self.relu(out)
+        return out
+    
 # Instantiate the model
 model = FERCNN().to(device)
 
 # Hyperparameters
-learning_rate = 0.001
-epochs = 100
+learning_rate = 0.0001
+epochs = 30
+noise_factor = 0.5
 
 # Loss function and optimizer
 criterion = nn.MSELoss()
 optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
-# Training
+# Training loop
+losses = []
 for epoch in range(epochs):
     model.train()
     running_loss = 0.0
     for images in train_loader:
         images = images.to(device)
+        # Add random noise to input images
+        noisy_imgs = images + noise_factor * torch.randn_like(images)
+        # Clip the images to be between 0 and 1
+        noisy_imgs = torch.clamp(noisy_imgs, 0., 1.)  # Ensure values are within [0, 1]
+
         optimizer.zero_grad()
-        outputs = model(images)
-        loss = criterion(outputs, images)
+        outputs = model(noisy_imgs.to(device))
+        loss = criterion(outputs, images.to(device))
         loss.backward()
         optimizer.step()
-        running_loss += loss.item()
-    print(f'Epoch [{epoch + 1}/{epochs}], Loss: {running_loss / len(train_loader):.4f}')
+
+        running_loss += loss.item() * images.size(0)
+
+    epoch_loss = running_loss / len(train_loader.dataset)
+    losses.append(epoch_loss)
+    print(f'Epoch [{epoch + 1}/{epochs}], Loss: {epoch_loss:.4f}')
+
+# Plot training loss over epochs
+plt.figure(figsize=(10, 5))
+plt.plot(range(1, epochs + 1), losses, marker='o')
+plt.title('Training Loss over Epochs')
+plt.xlabel('Epoch')
+plt.ylabel('Loss')
+plt.grid(True)
+plt.show()
 
 
-# Define ElasticTransform
-elastic_transform = ElasticTransform(alpha=34.0, sigma=4.0)
+def visualize_reconstruction(model, dataloader, num_images=10):
+    model.eval()
+    dataiter = iter(dataloader)  # Get an iterator over the DataLoader
+    images = next(dataiter)  # Fetch the first batch of data
 
+    # Add noise to the test images
+    noisy_imgs = images + noise_factor * torch.randn_like(images)
+    noisy_imgs = torch.clamp(noisy_imgs, 0., 1.)
 
-# Denormalization function
-def denormalize(tensor, mean, std):
-    mean = torch.tensor(mean).reshape(1, 3, 1, 1).to(tensor.device)
-    std = torch.tensor(std).reshape(1, 3, 1, 1).to(tensor.device)
-    tensor = tensor * std + mean
-    return tensor
+    # Move images and noisy_imgs to device
+    images = images.to(device)
+    noisy_imgs = noisy_imgs.to(device)
 
-# Testing and comparing results
-model.eval()
-mse_loss = 0.0
-with torch.no_grad():
-    for clean_images in test_loader:
-        clean_images = clean_images.to(device)
-        distorted_images = torch.stack([elastic_transform(img.cpu()) for img in clean_images]).to(device)
-        outputs = model(distorted_images)
+    # Get sample outputs
+    outputs = model(noisy_imgs)
 
-        mse_loss += criterion(outputs, clean_images).item()
+    # Convert tensors to numpy arrays for visualization
+    images_np = images.cpu().numpy()
+    noisy_imgs_np = noisy_imgs.cpu().numpy()
+    outputs_np = outputs.cpu().detach().numpy()
 
-        # Denormalize images
-        outputs = denormalize(outputs, mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5))
+    # Plot original and reconstructed images
+    fig, axes = plt.subplots(3, num_images, figsize=(25, 4))
 
-        # Visualize some examples
-        n = min(clean_images.size(0), 4)
-        fig, axes = plt.subplots(n, 3, figsize=(15, 15))
-        for i in range(n):
-            axes[i, 0].imshow(clean_images[i].cpu().permute(1, 2, 0))
-            axes[i, 0].set_title("Clean Image")
-            axes[i, 0].axis('off')
+    # Plot original images
+    for i in range(num_images):
+        axes[0, i].imshow(np.transpose(images_np[i], (1, 2, 0)))
+        axes[0, i].axis('off')
+        axes[0, i].set_title('Original')
 
-            axes[i, 1].imshow(distorted_images[i].cpu().permute(1, 2, 0))
-            axes[i, 1].set_title("Distorted Image")
-            axes[i, 1].axis('off')
+    # Plot noisey images
+    for i in range(num_images):
+        axes[1, i].imshow(np.transpose(noisy_imgs_np[i], (1, 2, 0)))
+        axes[1, i].axis('off')
+        axes[1, i].set_title('Noisey Image')
 
-            axes[i, 2].imshow(outputs[i].cpu().permute(1, 2, 0))
-            axes[i, 2].set_title("Reconstructed Image")
-            axes[i, 2].axis('off')
-        plt.show()
+    # Plot reconstructed images
+    for i in range(num_images):
+        axes[2, i].imshow(np.transpose(outputs_np[i], (1, 2, 0)))
+        axes[2, i].axis('off')
+        axes[2, i].set_title('Reconstructed')
 
-print(f'Mean Squared Error on test set: {mse_loss / len(test_loader):.4f}')
+    plt.show()
+
+# Visualize original and reconstructed images from the test set
+visualize_reconstruction(model, test_loader)
