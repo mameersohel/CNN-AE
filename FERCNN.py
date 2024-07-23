@@ -1,6 +1,7 @@
 import torch
 import torchvision.transforms as transforms
 from torch.utils.data import DataLoader,Subset, random_split, Dataset
+from torchmetrics import StructuralSimilarityIndexMeasure
 import torch.nn as nn
 import torch.optim as optim
 import os
@@ -51,7 +52,7 @@ def create_random_subset(dataset, subset_size):
     indices = np.random.choice(len(dataset), size=subset_size, replace=False)
     return Subset(dataset,indices)
 
-subset_size = 1000  # Adjust the subset size as needed
+subset_size = 2000  # Adjust the subset size as needed
 train_subset = create_random_subset(train_dataset, subset_size)
 test_subset = create_random_subset(test_dataset, subset_size // 4)  # Smaller test subset
 
@@ -170,10 +171,17 @@ plt.grid(True)
 plt.show()
 
 
-def visualize_reconstruction(model, dataloader, num_images=10):
+def visualize_reconstruction(model, dataloader, num_images=10, noise_factor=0.5):
     model.eval()
-    dataiter = iter(dataloader)  # Get an iterator over the DataLoader
+    dataiter = iter(dataloader)
     images = next(dataiter)  # Fetch the first batch of data
+
+    # Adjust num_images if it exceeds batch size
+    num_images = min(num_images, images.size(0))
+
+    print(f"Original images shape: {images.shape}")
+
+    ssim_metric = StructuralSimilarityIndexMeasure(data_range=1.0).to(device)
 
     # Add noise to the test images
     noisy_imgs = images + noise_factor * torch.randn_like(images)
@@ -183,36 +191,50 @@ def visualize_reconstruction(model, dataloader, num_images=10):
     images = images.to(device)
     noisy_imgs = noisy_imgs.to(device)
 
+    # Ensure batch dimension is included
+    if len(noisy_imgs.shape) == 3:
+        noisy_imgs = noisy_imgs.unsqueeze(0)
+
+    if len(images.shape) == 3:
+        images = images.unsqueeze(0)
+
     # Get sample outputs
     outputs = model(noisy_imgs)
+
+    print(f"Outputs shape: {outputs.shape}")
+
+    # Ensure the images are in the correct range [0, 1] if they are normalized
+    outputs = torch.clamp(outputs, 0, 1)
 
     # Convert tensors to numpy arrays for visualization
     images_np = images.cpu().numpy()
     noisy_imgs_np = noisy_imgs.cpu().numpy()
     outputs_np = outputs.cpu().detach().numpy()
 
-    # Plot original and reconstructed images
+    # Plot original, noisy, and reconstructed images
     fig, axes = plt.subplots(3, num_images, figsize=(25, 4))
 
-    # Plot original images
     for i in range(num_images):
+        # Plot original images
         axes[0, i].imshow(np.transpose(images_np[i], (1, 2, 0)))
         axes[0, i].axis('off')
         axes[0, i].set_title('Original')
 
-    # Plot noisey images
-    for i in range(num_images):
+        # Plot noisy images
         axes[1, i].imshow(np.transpose(noisy_imgs_np[i], (1, 2, 0)))
         axes[1, i].axis('off')
-        axes[1, i].set_title('Noisey Image')
+        axes[1, i].set_title('Noisy Image')
 
-    # Plot reconstructed images
-    for i in range(num_images):
+        # Plot reconstructed images
         axes[2, i].imshow(np.transpose(outputs_np[i], (1, 2, 0)))
         axes[2, i].axis('off')
         axes[2, i].set_title('Reconstructed')
 
+        # Calculate and print SSIM for each image in the batch
+        ssim_index = ssim_metric(outputs[i].unsqueeze(0), images[i].unsqueeze(0))
+        print(f'SSIM for image {i+1}: {ssim_index.item()}')
+
     plt.show()
 
-# Visualize original and reconstructed images from the test set
+
 visualize_reconstruction(model, test_loader)
