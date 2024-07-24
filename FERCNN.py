@@ -52,7 +52,7 @@ def create_random_subset(dataset, subset_size):
     indices = np.random.choice(len(dataset), size=subset_size, replace=False)
     return Subset(dataset,indices)
 
-subset_size = 2000  # Adjust the subset size as needed
+subset_size = 4000  # Adjust the subset size as needed
 train_subset = create_random_subset(train_dataset, subset_size)
 test_subset = create_random_subset(test_dataset, subset_size // 4)  # Smaller test subset
 
@@ -131,7 +131,7 @@ model = FERCNN().to(device)
 # Hyperparameters
 learning_rate = 0.0001
 epochs = 30
-noise_factor = 0.5
+noise_factor = 0
 
 # Loss function and optimizer
 criterion = nn.MSELoss()
@@ -144,19 +144,12 @@ for epoch in range(epochs):
     running_loss = 0.0
     for images in train_loader:
         images = images.to(device)
-        # Add random noise to input images
-        noisy_imgs = images + noise_factor * torch.randn_like(images)
-        # Clip the images to be between 0 and 1
-        noisy_imgs = torch.clamp(noisy_imgs, 0., 1.)  # Ensure values are within [0, 1]
-
         optimizer.zero_grad()
-        outputs = model(noisy_imgs.to(device))
+        outputs = model(images.to(device))
         loss = criterion(outputs, images.to(device))
         loss.backward()
         optimizer.step()
-
         running_loss += loss.item() * images.size(0)
-
     epoch_loss = running_loss / len(train_loader.dataset)
     losses.append(epoch_loss)
     print(f'Epoch [{epoch + 1}/{epochs}], Loss: {epoch_loss:.4f}')
@@ -171,9 +164,10 @@ plt.grid(True)
 plt.show()
 
 
-def visualize_reconstruction(model, dataloader, num_images=10, noise_factor=0.5):
+def visualize_reconstruction(model, dataloader, num_images=10, noise_factor=0):
     model.eval()
     dataiter = iter(dataloader)
+    mse_loss = 0.0
     images = next(dataiter)  # Fetch the first batch of data
 
     # Adjust num_images if it exceeds batch size
@@ -200,9 +194,7 @@ def visualize_reconstruction(model, dataloader, num_images=10, noise_factor=0.5)
 
     # Get sample outputs
     outputs = model(noisy_imgs)
-
-    print(f"Outputs shape: {outputs.shape}")
-
+    mse_loss += criterion(outputs, images).item()
     # Ensure the images are in the correct range [0, 1] if they are normalized
     outputs = torch.clamp(outputs, 0, 1)
 
@@ -233,8 +225,9 @@ def visualize_reconstruction(model, dataloader, num_images=10, noise_factor=0.5)
         # Calculate and print SSIM for each image in the batch
         ssim_index = ssim_metric(outputs[i].unsqueeze(0), images[i].unsqueeze(0))
         print(f'SSIM for image {i+1}: {ssim_index.item()}')
-
+        print(f'Mean Squared Error on test set: {mse_loss / len(test_loader):.4f}')
     plt.show()
+    
 
 
 visualize_reconstruction(model, test_loader)
