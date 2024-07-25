@@ -17,6 +17,8 @@ print(f"Using device: {device}")
 # Data preprocessing (resize and normalize images)
 transform = transforms.Compose([
     transforms.Resize((96, 96)),
+    transforms.RandomHorizontalFlip(),
+    transforms.RandomRotation(10),
     transforms.ToTensor(),
     transforms.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)),
 ])
